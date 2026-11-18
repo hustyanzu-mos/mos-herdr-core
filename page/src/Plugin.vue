@@ -1,6 +1,6 @@
 <template>
   <div>
-    <h2 class="mb-4">Herdr Core</h2>
+    <h2 class="mb-4">HerdrCore</h2>
 
     <v-skeleton-loader v-if="loading" :loading="true" type="card" />
 

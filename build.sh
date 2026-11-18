@@ -133,4 +133,4 @@ echo "Package: $DEB_FILE"
 echo "MD5:     $(cat "$DEB_FILE.md5")"
 echo
 echo "Install on MOS:  dpkg -i $(basename "$DEB_FILE")"
-echo "Then open Plugins -> Herdr Core and click Install."
+echo "Then open Plugins -> HerdrCore and click Install."

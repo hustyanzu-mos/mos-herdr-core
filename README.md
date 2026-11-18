@@ -1,9 +1,9 @@
-# Herdr Core MOS Plugin
+# HerdrCore MOS Plugin
 
 在 **MOS NAS**（不可变、运行于 RAM 的 Devuan 系统）上安装并管理
 [Herdr Core](https://herdr.dev)（`hc`）的插件实现仓库。
 
-- Hub 索引条目在：[hustyanzu/MOS-Hub](https://github.com/hustyanzu/MOS-Hub)
+- Hub 索引条目在：[hustyanzu/mos-templates](https://github.com/hustyanzu/mos-templates)
 - 本仓库只负责插件实现和 release `.deb`
 
 ---
@@ -44,7 +44,7 @@ MOS 的系统盘是只读 rootfs，重启后 `/usr`、`/var`、`/root` 都会重
 ## 仓库结构
 
 ```text
-HerdrCore/
+mos-herdr-core/
 ├── functions                       # MOS 生命周期钩子
 ├── settings.json                   # 插件默认设置
 ├── herdr-core-backend              # /usr/bin/plugins/herdr-core
@@ -58,7 +58,7 @@ HerdrCore/
 ```
 
 Hub 索引条目（`plugins/herdr-core.json`）和维护者信息在
-[MOS-Hub](https://github.com/hustyanzu/MOS-Hub) 仓库，不在本仓库重复。
+[mos-templates](https://github.com/hustyanzu/mos-templates) 仓库，不在本仓库重复。
 
 ---
 
@@ -103,13 +103,13 @@ GitHub Actions 会构建 `.deb` + `.md5` 并创建 Release。
 **Settings → System Configuration → MOS Hub Settings → Add Repository**
 
 ```text
-https://github.com/hustyanzu/MOS-Hub
+https://github.com/hustyanzu/mos-templates
 ```
 
 Refresh 后到 **Docker → MOS Hub → Plugins** 安装 **Herdr Core**。
 
-> 不要直接把本实现仓库添加到 MOS Hub；索引在 `MOS-Hub`。
-> 如果你偏要单仓库自包含，也可以把 `MOS-Hub/plugins/herdr-core.json` 复制回本仓库，
+> 不要直接把本实现仓库添加到 MOS Hub；索引在 `mos-templates`。
+> 如果你偏要单仓库自包含，也可以把 `mos-templates/plugins/herdr-core.json` 复制回本仓库，
 > 但多插件时建议保持现在的拆分。
 
 ---
