@@ -106,7 +106,10 @@ GitHub Actions 会构建 `.deb` + `.md5` 并创建 Release。
 https://github.com/hustyanzu/mos-templates
 ```
 
-Refresh 后到 **Docker → MOS Hub → Plugins** 安装 **Herdr Core**。
+Refresh 后到 **Docker → MOS Hub → Plugins** 安装 **HerdrCore**。
+
+> 私有仓库：在 MOS 配置 GitHub Token 后，Hub 会用 token 拉取本仓库的 release `.deb`。
+> Herdr Core 二进制仍从公开的 `releases.herdr.dev` 下载，不依赖 GitHub token。
 
 > 不要直接把本实现仓库添加到 MOS Hub；索引在 `mos-templates`。
 > 如果你偏要单仓库自包含，也可以把 `mos-templates/plugins/herdr-core.json` 复制回本仓库，
