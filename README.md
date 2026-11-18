@@ -3,7 +3,7 @@
 在 **MOS NAS**（不可变、运行于 RAM 的 Devuan 系统）上安装并管理
 [Herdr Core](https://herdr.dev)（`hc`）的插件实现仓库。
 
-- Hub 索引条目在：[hustyanzu/mos-templates](https://github.com/hustyanzu/mos-templates)
+- Hub 索引条目在：[hustyanzu-mos/mos-templates](https://github.com/hustyanzu-mos/mos-templates)
 - 本仓库只负责插件实现和 release `.deb`
 
 ---
@@ -79,7 +79,7 @@ mos-herdr-core/
 ```
 
 Hub 索引条目（`plugins/herdr-core.json`）和维护者信息在
-[mos-templates](https://github.com/hustyanzu/mos-templates) 仓库，不在本仓库重复。
+[mos-templates](https://github.com/hustyanzu-mos/mos-templates) 仓库，不在本仓库重复。
 
 ---
 
@@ -124,7 +124,7 @@ GitHub Actions 会构建 `.deb` + `.md5` 并创建 Release。
 **Settings → System Configuration → MOS Hub Settings → Add Repository**
 
 ```text
-https://github.com/hustyanzu/mos-templates
+https://github.com/hustyanzu-mos/mos-templates
 ```
 
 Refresh 后到 **Docker → MOS Hub → Plugins** 安装 **HerdrCore**。
