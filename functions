@@ -1,0 +1,125 @@
+#!/bin/bash
+# MOS lifecycle hooks for the Herdr Core plugin.
+# MOS sources this file and calls these functions by name.
+
+PLG_DIR="/boot/optional/plugins/herdr-core"
+HB="/usr/bin/plugins/herdr-core"
+SHARE_DIR="/usr/share/herdr-core-plugin"
+
+_setting() {
+  jq -r --arg k "$1" '.[$k] // empty' "$PLG_DIR/settings.json" 2>/dev/null
+}
+
+_restore() {
+  mkdir -p "$PLG_DIR/bin" "$PLG_DIR/config" "$PLG_DIR/state"
+
+  # Persistent fallbacks used when the RAM rootfs has been rebuilt.
+  for f in herdr-core-backend herdr-core-wrapper functions; do
+    if [ ! -f "$PLG_DIR/$f" ] && [ -f "$SHARE_DIR/$f" ]; then
+      cp -f "$SHARE_DIR/$f" "$PLG_DIR/$f"
+    fi
+  done
+
+  if [ ! -f "$PLG_DIR/settings.json" ]; then
+    if [ -f "$SHARE_DIR/settings.json" ]; then
+      cp -f "$SHARE_DIR/settings.json" "$PLG_DIR/settings.json"
+    fi
+  fi
+
+  if [ ! -x /usr/bin/plugins/herdr-core ]; then
+    mkdir -p /usr/bin/plugins
+    if [ -f "$PLG_DIR/herdr-core-backend" ]; then
+      cp -f "$PLG_DIR/herdr-core-backend" /usr/bin/plugins/herdr-core
+    elif [ -f "$SHARE_DIR/herdr-core-backend" ]; then
+      cp -f "$SHARE_DIR/herdr-core-backend" /usr/bin/plugins/herdr-core
+    fi
+    chmod 0755 /usr/bin/plugins/herdr-core 2>/dev/null || true
+  fi
+
+  if [ ! -x /usr/bin/hc ]; then
+    if [ -f "$PLG_DIR/herdr-core-wrapper" ]; then
+      cp -f "$PLG_DIR/herdr-core-wrapper" /usr/bin/hc
+    elif [ -f "$SHARE_DIR/herdr-core-wrapper" ]; then
+      cp -f "$SHARE_DIR/herdr-core-wrapper" /usr/bin/hc
+    fi
+    chmod 0755 /usr/bin/hc 2>/dev/null || true
+  fi
+
+  if [ ! -e /usr/bin/herdr-core ]; then
+    ln -sf hc /usr/bin/herdr-core 2>/dev/null || true
+  fi
+
+  # /boot may be noexec; keep an executable RAM copy for the server and hc.
+  if [ -x "$PLG_DIR/bin/herdr-core" ]; then
+    if [ ! -x /usr/bin/herdr-core.real ] || [ "$PLG_DIR/bin/herdr-core" -nt /usr/bin/herdr-core.real ]; then
+      install -m 0755 "$PLG_DIR/bin/herdr-core" /usr/bin/herdr-core.real 2>/dev/null || true
+    fi
+  fi
+
+  mkdir -p /run/herdr-core 2>/dev/null || true
+  chmod 700 /run/herdr-core 2>/dev/null || true
+}
+
+install() {
+  _restore
+
+  local auto auto_start
+  auto="$(_setting auto_install)"
+  auto_start="$(_setting auto_start)"
+  [ -z "$auto" ] && auto=true
+  [ -z "$auto_start" ] && auto_start=true
+
+  if [ ! -x "$PLG_DIR/bin/herdr-core" ]; then
+    if [ "$auto" = "true" ] && [ -x "$HB" ]; then
+      "$HB" install_binary >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if [ -x "$PLG_DIR/bin/herdr-core" ] && [ "$auto_start" = "true" ]; then
+    "$HB" start >/dev/null 2>&1 || true
+  fi
+
+  return 0
+}
+
+uninstall() {
+  if [ -x "$HB" ]; then
+    "$HB" uninstall >/dev/null 2>&1 || true
+  else
+    rm -f /usr/bin/plugins/herdr-core /usr/bin/hc /usr/bin/herdr-core /usr/bin/herdr-core.real 2>/dev/null || true
+  fi
+}
+
+plugin_update() {
+  _restore
+
+  if [ -x "$PLG_DIR/bin/herdr-core" ] && pgrep -f "$PLG_DIR/bin/herdr-core serve" >/dev/null 2>&1; then
+    "$HB" restart >/dev/null 2>&1 || true
+  fi
+}
+
+mos_start() {
+  _restore
+}
+
+mos_start_after_services() {
+  _restore
+
+  local auto auto_install
+  auto="$(_setting auto_start)"
+  auto_install="$(_setting auto_install)"
+  [ -z "$auto" ] && auto=true
+  [ -z "$auto_install" ] && auto_install=true
+
+  if [ ! -x "$PLG_DIR/bin/herdr-core" ] && [ "$auto_install" = "true" ]; then
+    "$HB" install_binary >/dev/null 2>&1 || true
+  fi
+
+  if [ "$auto" = "true" ] && [ -x "$PLG_DIR/bin/herdr-core" ]; then
+    "$HB" start >/dev/null 2>&1 || true
+  fi
+}
+
+mos_osupdate() {
+  _restore
+}

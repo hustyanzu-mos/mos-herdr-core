@@ -1,0 +1,152 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - '[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Plugin version, e.g. 0.1.0'
+        required: true
+        default: '0.1.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build Vue plugin
+        working-directory: page
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          npm install
+          npm run build
+
+      - name: Create package structure
+        run: |
+          VERSION='${{ steps.version.outputs.VERSION }}'
+          PKG_NAME="herdr-core-${VERSION}-1+mos-plugin"
+          PKG_DIR="${PKG_NAME}_all"
+
+          mkdir -p ${PKG_DIR}/usr/bin/plugins
+          mkdir -p ${PKG_DIR}/usr/share/herdr-core-plugin
+          mkdir -p ${PKG_DIR}/var/www/mos-plugins/herdr-core
+          mkdir -p ${PKG_DIR}/DEBIAN
+
+          cp herdr-core-backend ${PKG_DIR}/usr/bin/plugins/herdr-core
+          chmod 0755 ${PKG_DIR}/usr/bin/plugins/herdr-core
+
+          cp herdr-core-wrapper ${PKG_DIR}/usr/bin/hc
+          chmod 0755 ${PKG_DIR}/usr/bin/hc
+          ln -s hc ${PKG_DIR}/usr/bin/herdr-core
+
+          cp herdr-core-backend ${PKG_DIR}/usr/share/herdr-core-plugin/
+          cp herdr-core-wrapper ${PKG_DIR}/usr/share/herdr-core-plugin/
+          cp functions settings.json ${PKG_DIR}/usr/share/herdr-core-plugin/
+          chmod 0755 ${PKG_DIR}/usr/share/herdr-core-plugin/herdr-core-backend
+          chmod 0755 ${PKG_DIR}/usr/share/herdr-core-plugin/herdr-core-wrapper
+          chmod 0755 ${PKG_DIR}/usr/share/herdr-core-plugin/functions
+
+          cp -R page/dist/herdr-core/. ${PKG_DIR}/var/www/mos-plugins/herdr-core/
+          cp images/herdr-core.png ${PKG_DIR}/var/www/mos-plugins/herdr-core/icon.png
+
+          cat > ${PKG_DIR}/DEBIAN/control << EOF
+          Package: herdr-core-plugin
+          Version: ${VERSION}-1+mos-plugin
+          Architecture: all
+          Maintainer: hustyanzu
+          Section: utils
+          Priority: optional
+          Description: Herdr Core plugin for MOS
+           Headless terminal runtime for coding agents (Herdr Core / hc).
+          EOF
+
+          cat > ${PKG_DIR}/DEBIAN/postinst << 'EOF'
+          #!/bin/bash
+          set -e
+          PLG=/boot/optional/plugins/herdr-core
+          SHARE=/usr/share/herdr-core-plugin
+          mkdir -p "$PLG/bin" "$PLG/config" "$PLG/state"
+          chmod 0755 /usr/bin/plugins/herdr-core /usr/bin/hc 2>/dev/null || true
+          if [ ! -e /usr/bin/herdr-core ]; then ln -sf hc /usr/bin/herdr-core; fi
+          for f in herdr-core-backend herdr-core-wrapper functions; do
+            cp -f "$SHARE/$f" "$PLG/$f"
+          done
+          chmod 0755 "$PLG/herdr-core-backend" "$PLG/herdr-core-wrapper" "$PLG/functions" 2>/dev/null || true
+          if [ ! -f "$PLG/settings.json" ]; then
+            cp -f "$SHARE/settings.json" "$PLG/settings.json"
+          fi
+          if [ -x "$PLG/bin/herdr-core" ]; then
+            install -m 0755 "$PLG/bin/herdr-core" /usr/bin/herdr-core.real
+            if [ "$(jq -r '.auto_start // true' "$PLG/settings.json" 2>/dev/null)" = "true" ]; then
+              /usr/bin/plugins/herdr-core start >/dev/null 2>&1 || true
+            fi
+          fi
+          exit 0
+          EOF
+          chmod 0755 ${PKG_DIR}/DEBIAN/postinst
+
+          cat > ${PKG_DIR}/DEBIAN/postrm << 'EOF'
+          #!/bin/bash
+          rm -f /usr/bin/herdr-core.real
+          exit 0
+          EOF
+          chmod 0755 ${PKG_DIR}/DEBIAN/postrm
+
+          cat > ${PKG_DIR}/DEBIAN/prerm << 'EOF'
+          #!/bin/bash
+          if [ -x /usr/bin/plugins/herdr-core ]; then
+            /usr/bin/plugins/herdr-core stop >/dev/null 2>&1 || true
+          fi
+          exit 0
+          EOF
+          chmod 0755 ${PKG_DIR}/DEBIAN/prerm
+
+      - name: Build .deb package
+        run: |
+          VERSION='${{ steps.version.outputs.VERSION }}'
+          PKG_NAME="herdr-core-${VERSION}-1+mos-plugin"
+          PKG_DIR="${PKG_NAME}_all"
+          DEB_FILE="${PKG_NAME}_all.deb"
+
+          dpkg-deb --build --root-owner-group ${PKG_DIR} ${DEB_FILE}
+          md5sum ${DEB_FILE} | awk '{print $1}' > ${DEB_FILE}.md5
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: Herdr Core ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## Herdr Core MOS plugin ${{ steps.version.outputs.VERSION }}
+
+            Install the plugin from the MOS Hub, then click **Install** on the plugin page.
+            The Herdr Core binary itself is downloaded from https://releases.herdr.dev.
+          files: |
+            herdr-core-${{ steps.version.outputs.VERSION }}-1+mos-plugin_all.deb
+            herdr-core-${{ steps.version.outputs.VERSION }}-1+mos-plugin_all.deb.md5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

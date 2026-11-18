@@ -1,0 +1,420 @@
+#!/bin/bash
+# Herdr Core backend for MOS.
+# Called through POST /api/v1/mos/plugins/query with command "herdr-core".
+#
+# Persistent layout (survives the RAM rootfs):
+#   /boot/optional/plugins/herdr-core/
+#     bin/herdr-core          downloaded from releases.herdr.dev
+#     config/herdr-core/      XDG_CONFIG_HOME (config.toml, templates/)
+#     state/herdr-core/       XDG_STATE_HOME  (terminals.json, core logs)
+#     settings.json           plugin settings
+#     core.log                stdout/stderr of the current run
+#
+# Runtime socket lives in /run/herdr-core (tmpfs).
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+
+PLG_DIR="${HERDR_CORE_PLUGIN_DIR:-/boot/optional/plugins/herdr-core}"
+USR_BIN_DIR="${HERDR_CORE_USR_BIN_DIR:-/usr/bin}"
+BIN="$PLG_DIR/bin/herdr-core"
+RUNTIME_BIN="${HERDR_CORE_RUNTIME_BIN:-$USR_BIN_DIR/herdr-core.real}"
+SETTINGS="$PLG_DIR/settings.json"
+PID_FILE="$PLG_DIR/herdr-core.pid"
+RUNTIME_DIR="${HERDR_CORE_RUNTIME_DIR:-/run/herdr-core}"
+SOCKET="$RUNTIME_DIR/hc.sock"
+LOG="$PLG_DIR/core.log"
+STATE_LOG="$PLG_DIR/state/herdr-core/default/core.log"
+RELEASES="${HERDR_RELEASES_URL:-https://releases.herdr.dev}"
+SHARE_DIR="${HERDR_CORE_SHARE_DIR:-/usr/share/herdr-core-plugin}"
+SKIP_LINKS="${HERDR_CORE_SKIP_LINKS:-0}"
+
+export XDG_CONFIG_HOME="$PLG_DIR/config"
+export XDG_STATE_HOME="$PLG_DIR/state"
+export XDG_RUNTIME_DIR="$RUNTIME_DIR"
+export HC_SOCKET="$SOCKET"
+
+mkdir -p "$PLG_DIR/bin" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$RUNTIME_DIR" 2>/dev/null
+chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
+
+fail() { echo "Error: $*" >&2; exit 1; }
+say() { echo "$*"; }
+
+# ---------------------------------------------------------------------------
+# settings
+
+write_default_settings() {
+  cat > "$SETTINGS" <<'JSON'
+{
+  "auto_start": true,
+  "auto_install": true,
+  "pin_version": "",
+  "version": "",
+  "work_dir": ""
+}
+JSON
+}
+
+ensure_settings() {
+  mkdir -p "$PLG_DIR"
+  if [ -f "$SETTINGS" ] && ! jq empty "$SETTINGS" >/dev/null 2>&1; then
+    cp -f "$SETTINGS" "$SETTINGS.bak.$(date +%s)" 2>/dev/null || true
+    rm -f "$SETTINGS"
+  fi
+  if [ ! -f "$SETTINGS" ]; then
+    if [ -f "$SHARE_DIR/settings.json" ]; then
+      cp -f "$SHARE_DIR/settings.json" "$SETTINGS"
+    else
+      write_default_settings
+    fi
+  fi
+}
+
+setting() {
+  jq -r --arg k "$1" '.[$k] // empty' "$SETTINGS" 2>/dev/null
+}
+
+set_setting() {
+  local key="$1" value="$2" tmp
+  ensure_settings
+  tmp="$(mktemp)" || return 1
+  if jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$SETTINGS" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$SETTINGS"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# helpers
+
+platform_target() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo "linux-x86_64" ;;
+    aarch64|arm64) echo "linux-aarch64" ;;
+    *) return 1 ;;
+  esac
+}
+
+manifest_url() {
+  local pin="$1"
+  if [ -n "$pin" ]; then
+    echo "$RELEASES/core/$pin/manifest.json"
+  else
+    echo "$RELEASES/core/latest.json"
+  fi
+}
+
+fetch_manifest() {
+  local pin="$1"
+  curl -fsSL --connect-timeout 15 --retry 2 "$(manifest_url "$pin")"
+}
+
+installed_version() {
+  if [ -x "$BIN" ]; then
+    "$BIN" --version 2>/dev/null | awk '{print $2}'
+  elif [ -x "$RUNTIME_BIN" ]; then
+    "$RUNTIME_BIN" --version 2>/dev/null | awk '{print $2}'
+  fi
+}
+
+exec_bin() {
+  if [ -x "$RUNTIME_BIN" ]; then
+    echo "$RUNTIME_BIN"
+  else
+    echo "$BIN"
+  fi
+}
+
+effective_version() {
+  local v
+  v="$(installed_version)"
+  if [ -n "$v" ]; then
+    echo "$v"
+  else
+    setting version
+  fi
+}
+
+is_running() {
+  local pid
+  pid="$(pgrep -f "$RUNTIME_BIN serve" 2>/dev/null | head -n1)"
+  if [ -z "$pid" ]; then
+    pid="$(pgrep -f "$BIN serve" 2>/dev/null | head -n1)"
+  fi
+  if [ -n "$pid" ]; then
+    echo "$pid"
+    return 0
+  fi
+  return 1
+}
+
+can_write_usr() {
+  [ "$SKIP_LINKS" = "1" ] && return 1
+  [ -w "$USR_BIN_DIR" ] || return 1
+  return 0
+}
+
+ensure_runtime_files() {
+  mkdir -p "$PLG_DIR/bin" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" 2>/dev/null
+
+  if can_write_usr; then
+    mkdir -p "$USR_BIN_DIR/plugins" 2>/dev/null
+
+    if [ ! -x "$USR_BIN_DIR/plugins/herdr-core" ]; then
+      if [ -f "$PLG_DIR/herdr-core-backend" ]; then
+        cp -f "$PLG_DIR/herdr-core-backend" "$USR_BIN_DIR/plugins/herdr-core"
+      elif [ -f "$SHARE_DIR/herdr-core-backend" ]; then
+        cp -f "$SHARE_DIR/herdr-core-backend" "$USR_BIN_DIR/plugins/herdr-core"
+      fi
+      chmod 0755 "$USR_BIN_DIR/plugins/herdr-core" 2>/dev/null || true
+    fi
+
+    if [ ! -x "$USR_BIN_DIR/hc" ]; then
+      if [ -f "$PLG_DIR/herdr-core-wrapper" ]; then
+        cp -f "$PLG_DIR/herdr-core-wrapper" "$USR_BIN_DIR/hc"
+      elif [ -f "$SHARE_DIR/herdr-core-wrapper" ]; then
+        cp -f "$SHARE_DIR/herdr-core-wrapper" "$USR_BIN_DIR/hc"
+      fi
+      chmod 0755 "$USR_BIN_DIR/hc" 2>/dev/null || true
+    fi
+
+    if [ ! -e "$USR_BIN_DIR/herdr-core" ]; then
+      ln -sf hc "$USR_BIN_DIR/herdr-core" 2>/dev/null || true
+    fi
+
+    # /boot may be mounted noexec, so execute a RAM copy from /usr/bin.
+    if [ -x "$BIN" ]; then
+      if [ ! -x "$RUNTIME_BIN" ] || [ "$BIN" -nt "$RUNTIME_BIN" ]; then
+        install -m 0755 "$BIN" "$RUNTIME_BIN" 2>/dev/null || true
+      fi
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# commands
+
+cmd_check_version() {
+  local current latest update=false manifest
+  ensure_settings
+  current="$(effective_version)"
+  [ -n "$current" ] || current="not installed"
+
+  if ! manifest="$(fetch_manifest "$(setting pin_version)")"; then
+    printf '{"current":"%s","latest":"","update_available":false,"error":"cannot reach release server"}\n' "$current"
+    return 1
+  fi
+
+  latest="$(printf '%s' "$manifest" | jq -r '.version // empty' 2>/dev/null)"
+  if [ -z "$latest" ]; then
+    printf '{"current":"%s","latest":"","update_available":false,"error":"invalid release manifest"}\n' "$current"
+    return 1
+  fi
+
+  if [ "$current" != "$latest" ]; then update=true; fi
+  printf '{"current":"%s","latest":"%s","update_available":%s}\n' "$current" "$latest" "$update"
+}
+
+cmd_install_binary() {
+  local target pin manifest url sha version tmp was_running=0
+  ensure_settings
+
+  target="$(platform_target)" || fail "unsupported architecture: $(uname -m)"
+  pin="$(setting pin_version)"
+
+  manifest="$(fetch_manifest "$pin")" || fail "cannot fetch release manifest"
+  url="$(printf '%s' "$manifest" | jq -r --arg t "$target" '.targets[$t].url // empty' 2>/dev/null)"
+  sha="$(printf '%s' "$manifest" | jq -r --arg t "$target" '.targets[$t].sha256 // empty' 2>/dev/null)"
+  version="$(printf '%s' "$manifest" | jq -r '.version // empty' 2>/dev/null)"
+
+  [ -n "$url" ] || fail "no $target build in release manifest"
+  [ -n "$sha" ] || fail "release manifest has no sha256 for $target"
+  [ -n "$version" ] || fail "release manifest has no version"
+
+  if is_running >/dev/null 2>&1; then
+    was_running=1
+    cmd_stop >/dev/null 2>&1 || true
+  fi
+
+  tmp="$(mktemp -d)" || fail "cannot create temporary directory"
+  trap 'rm -rf "$tmp"' EXIT
+
+  say "Downloading Herdr Core $version for $target..."
+  curl -fsSL --connect-timeout 20 --retry 2 "$url" -o "$tmp/herdr-core.tar.gz" || fail "download failed: $url"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    ( cd "$tmp" && printf '%s  %s\n' "$sha" "herdr-core.tar.gz" | sha256sum -c - >/dev/null ) || fail "checksum mismatch"
+  else
+    local got
+    got="$(shasum -a 256 "$tmp/herdr-core.tar.gz" | awk '{print $1}')"
+    [ "$got" = "$sha" ] || fail "checksum mismatch"
+  fi
+
+  tar -xzf "$tmp/herdr-core.tar.gz" -C "$tmp" || fail "cannot extract release archive"
+  [ -x "$tmp/herdr-core" ] || fail "release archive does not contain herdr-core"
+  "$tmp/herdr-core" --version >/dev/null 2>&1 || fail "downloaded binary does not run on this machine"
+
+  install -m 0755 "$tmp/herdr-core" "$BIN.new" || fail "cannot write $BIN.new"
+  mv -f "$BIN.new" "$BIN" || fail "cannot activate $BIN"
+  if can_write_usr; then
+    install -m 0755 "$BIN" "$RUNTIME_BIN" || fail "cannot write $RUNTIME_BIN"
+  fi
+  set_setting version "$version"
+  ensure_runtime_files
+
+  say "Installed Herdr Core $version ($target)"
+
+  if [ "$was_running" = "1" ]; then
+    cmd_start
+  fi
+}
+
+cmd_start() {
+  local pid work version i exe
+  ensure_settings
+  ensure_runtime_files
+
+  if pid="$(is_running 2>/dev/null)"; then
+    say "Already running (PID: $pid)"
+    return 0
+  fi
+
+  exe="$(exec_bin)"
+  [ -x "$exe" ] || fail "Herdr Core is not installed yet (use install_binary or the plugin page)"
+
+  work="$(setting work_dir)"
+  if [ -z "$work" ] || [ ! -d "$work" ]; then
+    work="/"
+  fi
+
+  version="$(installed_version)"
+  : > "$LOG" 2>/dev/null || true
+
+  (
+    cd "$work" 2>/dev/null || cd /
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$exe" serve >> "$LOG" 2>&1 < /dev/null &
+    else
+      nohup "$exe" serve >> "$LOG" 2>&1 < /dev/null &
+    fi
+    echo $! > "$PID_FILE"
+  )
+
+  for i in $(seq 1 50); do
+    if [ -S "$SOCKET" ] && is_running >/dev/null 2>&1; then
+      say "Started Herdr Core $version (PID: $(is_running))"
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  rm -f "$PID_FILE"
+  say "Failed to start Herdr Core. Last log lines:"
+  tail -n 40 "$LOG" 2>/dev/null
+  return 1
+}
+
+cmd_stop() {
+  local pid i exe
+  pid="$(is_running 2>/dev/null)" || {
+    rm -f "$PID_FILE"
+    say "Not running"
+    return 0
+  }
+
+  exe="$(exec_bin)"
+  if [ -x "$exe" ]; then
+    timeout 15 "$exe" server stop --json >/dev/null 2>&1 || true
+  fi
+
+  for i in $(seq 1 50); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+
+  rm -f "$PID_FILE" "$SOCKET"
+  say "Stopped"
+}
+
+cmd_restart() {
+  cmd_stop
+  cmd_start
+}
+
+cmd_status() {
+  local pid="" running=false live=0 uptime=0 version s original_pid exe
+  version="$(effective_version)"
+  [ -n "$version" ] || version="not installed"
+  exe="$(exec_bin)"
+
+  if pid="$(is_running 2>/dev/null)"; then
+    running=true
+    original_pid="$pid"
+    if [ -x "$exe" ]; then
+      s="$(timeout 5 "$exe" server status --json 2>/dev/null)"
+      if [ -n "$s" ]; then
+        pid="$(printf '%s' "$s" | jq -r '.pid // empty' 2>/dev/null)"
+        live="$(printf '%s' "$s" | jq -r '.live // 0' 2>/dev/null)"
+        uptime="$(printf '%s' "$s" | jq -r '.uptime_ms // 0' 2>/dev/null)"
+      fi
+    fi
+    [ -n "$pid" ] || pid="$original_pid"
+  fi
+
+  [ -n "$pid" ] || pid=0
+  case "$live" in ''|*[!0-9]*) live=0 ;; esac
+  case "$uptime" in ''|*[!0-9]*) uptime=0 ;; esac
+
+  printf '{"running":%s,"pid":%s,"version":"%s","live":%s,"uptime_ms":%s,"socket":"%s"}\n' \
+    "$running" "$pid" "$version" "$live" "$uptime" "$SOCKET"
+}
+
+cmd_logs() {
+  local lines="${1:-200}"
+  case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
+
+  echo "==> $LOG <=="
+  tail -n "$lines" "$LOG" 2>/dev/null
+  echo
+  echo "==> $STATE_LOG <=="
+  tail -n "$lines" "$STATE_LOG" 2>/dev/null
+}
+
+cmd_uninstall() {
+  cmd_stop >/dev/null 2>&1 || true
+
+  if can_write_usr; then
+    rm -f "$USR_BIN_DIR/plugins/herdr-core" "$USR_BIN_DIR/hc" "$USR_BIN_DIR/herdr-core" "$RUNTIME_BIN"
+  fi
+
+  say "Removed Herdr Core runtime. Persistent data kept in $PLG_DIR"
+}
+
+# ---------------------------------------------------------------------------
+
+ensure_settings
+ensure_runtime_files
+
+case "${1:-}" in
+  check_version) cmd_check_version ;;
+  install_binary|install|update) cmd_install_binary ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_restart ;;
+  status) cmd_status ;;
+  logs) shift; cmd_logs "${1:-200}" ;;
+  version) installed_version ;;
+  uninstall) cmd_uninstall ;;
+  *)
+    echo "Usage: $0 {check_version|install_binary|start|stop|restart|status|logs|version|uninstall}" >&2
+    exit 2
+    ;;
+esac

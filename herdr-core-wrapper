@@ -1,0 +1,34 @@
+#!/bin/sh
+# Herdr Core (hc) wrapper for MOS.
+#
+# Keeps Herdr Core's config, state and socket together so that:
+#   - `hc` from an SSH session talks to the core started at boot
+#   - config/templates survive the RAM rootfs rebuild
+#
+# Persistent data: /boot/optional/plugins/herdr-core
+# Runtime socket:  /run/herdr-core/hc.sock (tmpfs)
+
+PLG_DIR="${HERDR_CORE_PLUGIN_DIR:-/boot/optional/plugins/herdr-core}"
+BIN="$PLG_DIR/bin/herdr-core"
+REAL="${HERDR_CORE_RUNTIME_BIN:-/usr/bin/herdr-core.real}"
+RUNTIME_DIR="${HERDR_CORE_RUNTIME_DIR:-/run/herdr-core}"
+
+# /boot may be noexec; prefer the RAM copy created at boot/install.
+if [ -x "$REAL" ]; then
+  BIN="$REAL"
+fi
+
+if [ ! -x "$BIN" ]; then
+  echo "Herdr Core is not installed yet. Open the Herdr Core plugin in MOS and click Install." >&2
+  exit 127
+fi
+
+export XDG_CONFIG_HOME="$PLG_DIR/config"
+export XDG_STATE_HOME="$PLG_DIR/state"
+export XDG_RUNTIME_DIR="$RUNTIME_DIR"
+export HC_SOCKET="$RUNTIME_DIR/hc.sock"
+
+mkdir -p "$XDG_CONFIG_HOME/herdr-core" "$XDG_STATE_HOME" "$RUNTIME_DIR" 2>/dev/null || true
+chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
+
+exec "$BIN" "$@"
