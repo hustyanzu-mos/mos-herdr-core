@@ -1,14 +1,10 @@
-# MOS Herdr Core Plugin
+# Herdr Core MOS Plugin
 
 在 **MOS NAS**（不可变、运行于 RAM 的 Devuan 系统）上安装并管理
-[Herdr Core](https://herdr.dev)（`hc`）的 MOS 插件仓库。
+[Herdr Core](https://herdr.dev)（`hc`）的插件实现仓库。
 
-本仓库同时扮演两个角色：
-
-1. **MOS Hub 仓库**：`maintainer.json`、`plugins/herdr-core.json`、`images/`
-2. **插件源码仓库**：`page/`、`functions`、`settings.json`、后端脚本
-
-因此只需要一个 GitHub 仓库即可，不必发布到官方 MOS Hub。
+- Hub 索引条目在：[hustyanzu/MOS-Hub](https://github.com/hustyanzu/MOS-Hub)
+- 本仓库只负责插件实现和 release `.deb`
 
 ---
 
@@ -49,20 +45,20 @@ MOS 的系统盘是只读 rootfs，重启后 `/usr`、`/var`、`/root` 都会重
 
 ```text
 HerdrCore/
-├── maintainer.json                 # MOS Hub 仓库维护者信息
-├── plugins/
-│   └── herdr-core.json             # MOS Hub 插件元数据
-├── images/
-│   └── herdr-core.png              # 插件图标
 ├── functions                       # MOS 生命周期钩子
 ├── settings.json                   # 插件默认设置
 ├── herdr-core-backend              # /usr/bin/plugins/herdr-core
 ├── herdr-core-wrapper              # /usr/bin/hc
+├── images/
+│   └── herdr-core.png              # 插件页面图标
 ├── page/                           # Vue 插件页面
 ├── build.sh                        # 本地构建 .deb
 └── .github/workflows/
     └── build-plugin.yml            # GitHub Release 自动构建
 ```
+
+Hub 索引条目（`plugins/herdr-core.json`）和维护者信息在
+[MOS-Hub](https://github.com/hustyanzu/MOS-Hub) 仓库，不在本仓库重复。
 
 ---
 
@@ -91,35 +87,30 @@ npm run dev
 
 ---
 
-## 发布到你自己的 MOS Hub 仓库
+## 发布
 
-1. 在 GitHub 创建仓库（默认地址是 `https://github.com/hustyanzu/HerdrCore`）。
-   如果你用别的用户名/仓库名，修改：
-   - `plugins/herdr-core.json` 里的 `repository`、`icon`、`readme_url`
-   - `README.md` 中的链接
-2. 提交并推送。
-3. 打标签触发构建：
+实现仓库需要产生 `.deb` release，索引条目的 `repository` 会指向这里：
 
-   ```bash
-   git tag 0.1.0
-   git push origin 0.1.0
-   ```
+```bash
+git tag 0.1.0
+git push origin 0.1.0
+```
 
-   GitHub Actions 会构建 `.deb` + `.md5` 并创建 Release。
+GitHub Actions 会构建 `.deb` + `.md5` 并创建 Release。
 
-4. 在 MOS：
+然后在 MOS 添加索引仓库：
 
-   **Settings → System Configuration → MOS Hub Settings → Add Repository**
+**Settings → System Configuration → MOS Hub Settings → Add Repository**
 
-   填入：
+```text
+https://github.com/hustyanzu/MOS-Hub
+```
 
-   ```text
-   https://github.com/hustyanzu/HerdrCore
-   ```
+Refresh 后到 **Docker → MOS Hub → Plugins** 安装 **Herdr Core**。
 
-   点击 Refresh，然后到 **Docker → MOS Hub → Plugins** 安装 **Herdr Core**。
-
-> 仓库需要可被 MOS 访问。私有仓库需要额外配置 GitHub Token，建议先用公开仓库。
+> 不要直接把本实现仓库添加到 MOS Hub；索引在 `MOS-Hub`。
+> 如果你偏要单仓库自包含，也可以把 `MOS-Hub/plugins/herdr-core.json` 复制回本仓库，
+> 但多插件时建议保持现在的拆分。
 
 ---
 
