@@ -41,6 +41,27 @@ MOS 的系统盘是只读 rootfs，重启后 `/usr`、`/var`、`/root` 都会重
 
 ---
 
+## 持久化
+
+MOS 的 Hub 安装器会把 `.deb` 和 `functions` 放到：
+
+```text
+/boot/optional/plugins/herdr-core/<version>/
+```
+
+并在插件根目录写 `template.json`。启动时 `installplugins-mos` 会重新安装该
+`.deb`，`mos_start`/`mos_start_after_services` 会恢复运行时并启动 core。
+
+- 二进制：`/boot/optional/plugins/herdr-core/bin/herdr-core`
+- 配置：`/boot/optional/plugins/herdr-core/config/herdr-core/`
+- 状态：`/boot/optional/plugins/herdr-core/state/herdr-core/`
+- 运行时：`/usr/bin/herdr-core.real`、`/run/herdr-core/`（RAM，启动时恢复）
+
+如果手动 `dpkg -i`，插件只对当前运行有效；要让它重启后仍然存在，请使用
+MOS Hub，或把 `.deb`/`functions` 放到版本目录并补上 `template.json`。
+
+---
+
 ## 仓库结构
 
 ```text
